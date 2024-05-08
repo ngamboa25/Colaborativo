@@ -21,86 +21,86 @@ class MyApp extends StatelessWidget {
 }
 
 class BluetoothDataStream extends StatefulWidget {
+  // Adding a Key parameter to the constructor
+  BluetoothDataStream({Key? key}) : super(key: key);
+
   @override
   _BluetoothDataStreamState createState() => _BluetoothDataStreamState();
 }
 
 class _BluetoothDataStreamState extends State<BluetoothDataStream> {
   FlutterBlue flutterBlue = FlutterBlue.instance;
-  StreamSubscription? scanSubscription;
+  List<BluetoothDevice> devicesList = [];
   BluetoothDevice? device;
   List<FlSpot> pulseData = [];
   StreamSubscription? deviceConnection;
+  StreamSubscription<List<int>>? dataSubscription;
   List<double> pulseValues = [];
 
   @override
   void initState() {
     super.initState();
-    startScan();
-  }
+    flutterBlue.startScan(timeout: Duration(seconds: 10));
 
-  void startScan() {
-    scanSubscription = flutterBlue.scan(timeout: Duration(seconds: 10)).listen((scanResult) {
-      // Check if the device is the one we are looking for
-      if (scanResult.device.name == 'HC-05') {
-        setState(() {
-          device = scanResult.device;
-          stopScan();
-          connectToDevice();
-        });
+    // Listen to scan results
+    flutterBlue.scanResults.listen((results) {
+      for (ScanResult result in results) {
+        if (!devicesList.any((device) => device.id == result.device.id)) {
+          setState(() {
+            devicesList.add(result.device);
+          });
+        }
       }
+    });
+
+    // Stop scanning after a period of time
+    Future.delayed(Duration(seconds: 10)).then((_) {
+      flutterBlue.stopScan();
     });
   }
 
-  void stopScan() {
-    scanSubscription?.cancel();
-    scanSubscription = null;
-    flutterBlue.stopScan();
+  void connectToDevice(BluetoothDevice selectedDevice) async {
+    await selectedDevice.connect();
+    setState(() {
+      device = selectedDevice;
+    });
+    setNotificationForPulse();
   }
 
-  void connectToDevice() {
+  void setNotificationForPulse() async {
     if (device != null) {
-      // Use the device's connect method instead of FlutterBlue instance
-      deviceConnection = device!.connect().listen((state) {
-        if (state == BluetoothDeviceState.connected) {
-          print('Connected to ${device!.name}');
-          setNotificationForPulse();
+      var services = await device!.discoverServices();
+      for (var service in services) {
+        BluetoothCharacteristic? characteristic;
+        try {
+          characteristic = service.characteristics.firstWhere(
+            (c) => c.uuid.toString().toUpperCase().contains('YOUR_CHARACTERISTIC_UUID'));
+        } catch (e) {
+          characteristic = null;
         }
-      }, onError: (err) {
-        print('Failed to connect: $err');
-      });
-    }
-  }
 
-  void setNotificationForPulse() {
-    device?.discoverServices().then((services) {
-      var service = services.firstWhere(
-        (s) => s.uuid.toString().toUpperCase().contains('YOUR_SERVICE_UUID'),
-        orElse: () => null
-      );
-      if (service != null) {
-        var characteristic = service.characteristics.firstWhere(
-          (c) => c.uuid.toString().toUpperCase().contains('YOUR_CHARACTERISTIC_UUID'),
-          orElse: () => null
-        );
         if (characteristic != null) {
-          characteristic.setNotifyValue(true);
-          characteristic.value.listen((value) {
+          await characteristic.setNotifyValue(true);
+          dataSubscription = characteristic.value.listen((value) {
             double pulse = double.parse(String.fromCharCodes(value));
             setState(() {
               pulseValues.add(pulse);
               pulseData.add(FlSpot(pulseValues.length.toDouble(), pulse));
             });
+          }, onError: (e) {
+            print('Error receiving data: $e');
           });
         }
       }
-    });
+    }
   }
 
   @override
   void dispose() {
     deviceConnection?.cancel();
-    scanSubscription?.cancel();
+    dataSubscription?.cancel();
+    flutterBlue.stopScan();
+    device?.disconnect();
     super.dispose();
   }
 
@@ -110,22 +110,40 @@ class _BluetoothDataStreamState extends State<BluetoothDataStream> {
       appBar: AppBar(
         title: Text('Pulse Data Stream'),
       ),
-      body: pulseData.isEmpty ? Center(child: CircularProgressIndicator()) : LineChart(
-        LineChartData(
-          gridData: FlGridData(show: true),
-          titlesData: FlTitlesData(show: true),
-          borderData: FlBorderData(show: true),
-          lineBarsData: [
-            LineChartBarData(
-              spots: pulseData,
-              isCurved: true,
-              barWidth: 2,
-              color: Colors.blue, 
-              dotData: FlDotData(show: false),
-              belowBarData: BarAreaData(show: false),
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              itemCount: devicesList.length,
+              itemBuilder: (context, index) {
+                return ListTile(
+                  title: Text(devicesList[index].name.isEmpty ? '(unknown device)' : devicesList[index].name),
+                  subtitle: Text(devicesList[index].id.toString()),
+                  onTap: () => connectToDevice(devicesList[index]),
+                );
+              },
             ),
-          ],
-        ),
+          ),
+          pulseData.isEmpty ? Expanded(child: Center(child: CircularProgressIndicator())) : Expanded(
+            child: LineChart(
+              LineChartData(
+                gridData: FlGridData(show: true),
+                titlesData: FlTitlesData(show: true),
+                borderData: FlBorderData(show: true),
+                lineBarsData: [
+                  LineChartBarData(
+                    spots: pulseData,
+                    isCurved: true,
+                    barWidth: 2,
+                    color: Colors.blue,
+                    dotData: FlDotData(show: false),
+                    belowBarData: BarAreaData(show: false),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
