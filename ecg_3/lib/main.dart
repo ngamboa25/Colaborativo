@@ -13,7 +13,10 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Heart Rate Monitor',
-      theme: ThemeData(primarySwatch: Colors.blue),
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        visualDensity: VisualDensity.adaptivePlatformDensity,
+      ),
       home: const BluetoothDevicesScreen(),
     );
   }
@@ -29,39 +32,39 @@ class BluetoothDevicesScreen extends StatefulWidget {
 class _BluetoothDevicesScreenState extends State<BluetoothDevicesScreen> {
   FlutterBlue flutterBlue = FlutterBlue.instance;
   List<BluetoothDevice> devicesList = [];
-  StreamSubscription? scanSubscription;
 
   @override
   void initState() {
     super.initState();
-    startScan();
-  }
+    flutterBlue.startScan(timeout: Duration(seconds: 4));
 
-  void startScan() {
-    scanSubscription = flutterBlue.scan(timeout: const Duration(seconds: 10)).listen((scanResult) {
-      if (!devicesList.any((device) => device.id == scanResult.device.id)) {
-        setState(() {
-          devicesList.add(scanResult.device);
-        });
+    flutterBlue.scanResults.listen((results) {
+      for (ScanResult result in results) {
+        if (!devicesList.any((device) => device.id == result.device.id)) {
+          setState(() {
+            devicesList.add(result.device);
+          });
+        }
       }
-    }, onDone: stopScan);
-  }
+    });
 
-  void stopScan() {
-    scanSubscription?.cancel();
-    scanSubscription = null;
+    Future.delayed(Duration(seconds: 5)).then((_) {
+      flutterBlue.stopScan();
+    });
   }
 
   @override
   void dispose() {
-    stopScan();
+    flutterBlue.stopScan();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Available Bluetooth Devices')),
+      appBar: AppBar(
+        title: const Text('Available Bluetooth Devices'),
+      ),
       body: ListView.builder(
         itemCount: devicesList.length,
         itemBuilder: (context, index) {
@@ -89,7 +92,7 @@ class HeartRateMonitor extends StatefulWidget {
 
 class _HeartRateMonitorState extends State<HeartRateMonitor> {
   StreamSubscription<List<int>>? dataSubscription;
-  int currentHeartRate = 0;
+  String heartRate = "Waiting for data...";
 
   @override
   void initState() {
@@ -104,17 +107,20 @@ class _HeartRateMonitorState extends State<HeartRateMonitor> {
 
   void discoverServices() async {
     List<BluetoothService> services = await widget.device.discoverServices();
+    var targetServiceUuid = "0000180d-0000-1000-8000-00805f9b34fb"; // Heart Rate Service UUID
+    var targetCharUuid = "00002a37-0000-1000-8000-00805f9b34fb"; // Heart Rate Measurement Characteristic UUID
+
     for (var service in services) {
-      var characteristic = service.characteristics.firstWhere(
-        (c) => c.uuid.toString().toUpperCase().contains('HEART_RATE_MEASUREMENT'), // Replace with your characteristic UUID
-        orElse: () => throw Exception('Characteristic not found.'),
-      );
-      await characteristic.setNotifyValue(true);
-      dataSubscription = characteristic.value.listen((data) {
-        setState(() {
-          currentHeartRate = int.parse(String.fromCharCodes(data));
+      if (service.uuid.toString() == targetServiceUuid) {
+        var characteristic = service.characteristics.firstWhere(
+            (c) => c.uuid.toString() == targetCharUuid, orElse: () => throw Exception('Characteristic not found.'));
+        await characteristic.setNotifyValue(true);
+        dataSubscription = characteristic.value.listen((data) {
+          setState(() {
+            heartRate = String.fromCharCodes(data);
+          });
         });
-      });
+      }
     }
   }
 
@@ -128,14 +134,14 @@ class _HeartRateMonitorState extends State<HeartRateMonitor> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Heart Rate Monitor')),
+      appBar: AppBar(title: Text('Heart Rate from ${widget.device.name}')),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.favorite, color: Colors.red, size: 48),
-            const SizedBox(height: 24),
-            Text('Current Heart Rate: $currentHeartRate bpm', style: TextStyle(fontSize: 24)),
+            Icon(Icons.favorite, color: Colors.red, size: 48, key: Key('heart_icon')),
+            SizedBox(height: 20),
+            Text('Heart Rate: $heartRate bpm', style: TextStyle(fontSize: 24)),
           ],
         ),
       ),
