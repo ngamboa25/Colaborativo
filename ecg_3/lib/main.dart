@@ -1,149 +1,143 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue/flutter_blue.dart';
-import 'package:fl_chart/fl_chart.dart';
 import 'dart:async';
 
 void main() {
-  runApp(MyApp());
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
+  const MyApp({Key? key}) : super(key: key);
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Bluetooth Data Stream',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-      ),
-      home: BluetoothDataStream(),
+      title: 'Heart Rate Monitor',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: const BluetoothDevicesScreen(),
     );
   }
 }
 
-class BluetoothDataStream extends StatefulWidget {
-  // Adding a Key parameter to the constructor
-  BluetoothDataStream({Key? key}) : super(key: key);
+class BluetoothDevicesScreen extends StatefulWidget {
+  const BluetoothDevicesScreen({Key? key}) : super(key: key);
 
   @override
-  _BluetoothDataStreamState createState() => _BluetoothDataStreamState();
+  _BluetoothDevicesScreenState createState() => _BluetoothDevicesScreenState();
 }
 
-class _BluetoothDataStreamState extends State<BluetoothDataStream> {
+class _BluetoothDevicesScreenState extends State<BluetoothDevicesScreen> {
   FlutterBlue flutterBlue = FlutterBlue.instance;
   List<BluetoothDevice> devicesList = [];
-  BluetoothDevice? device;
-  List<FlSpot> pulseData = [];
-  StreamSubscription? deviceConnection;
-  StreamSubscription<List<int>>? dataSubscription;
-  List<double> pulseValues = [];
+  StreamSubscription? scanSubscription;
 
   @override
   void initState() {
     super.initState();
-    flutterBlue.startScan(timeout: Duration(seconds: 10));
-
-    // Listen to scan results
-    flutterBlue.scanResults.listen((results) {
-      for (ScanResult result in results) {
-        if (!devicesList.any((device) => device.id == result.device.id)) {
-          setState(() {
-            devicesList.add(result.device);
-          });
-        }
-      }
-    });
-
-    // Stop scanning after a period of time
-    Future.delayed(Duration(seconds: 10)).then((_) {
-      flutterBlue.stopScan();
-    });
+    startScan();
   }
 
-  void connectToDevice(BluetoothDevice selectedDevice) async {
-    await selectedDevice.connect();
-    setState(() {
-      device = selectedDevice;
-    });
-    setNotificationForPulse();
+  void startScan() {
+    scanSubscription = flutterBlue.scan(timeout: const Duration(seconds: 10)).listen((scanResult) {
+      if (!devicesList.any((device) => device.id == scanResult.device.id)) {
+        setState(() {
+          devicesList.add(scanResult.device);
+        });
+      }
+    }, onDone: stopScan);
   }
 
-  void setNotificationForPulse() async {
-    if (device != null) {
-      var services = await device!.discoverServices();
-      for (var service in services) {
-        BluetoothCharacteristic? characteristic;
-        try {
-          characteristic = service.characteristics.firstWhere(
-            (c) => c.uuid.toString().toUpperCase().contains('YOUR_CHARACTERISTIC_UUID'));
-        } catch (e) {
-          characteristic = null;
-        }
-
-        if (characteristic != null) {
-          await characteristic.setNotifyValue(true);
-          dataSubscription = characteristic.value.listen((value) {
-            double pulse = double.parse(String.fromCharCodes(value));
-            setState(() {
-              pulseValues.add(pulse);
-              pulseData.add(FlSpot(pulseValues.length.toDouble(), pulse));
-            });
-          }, onError: (e) {
-            print('Error receiving data: $e');
-          });
-        }
-      }
-    }
+  void stopScan() {
+    scanSubscription?.cancel();
+    scanSubscription = null;
   }
 
   @override
   void dispose() {
-    deviceConnection?.cancel();
-    dataSubscription?.cancel();
-    flutterBlue.stopScan();
-    device?.disconnect();
+    stopScan();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Pulse Data Stream'),
+      appBar: AppBar(title: const Text('Available Bluetooth Devices')),
+      body: ListView.builder(
+        itemCount: devicesList.length,
+        itemBuilder: (context, index) {
+          return ListTile(
+            title: Text(devicesList[index].name.isEmpty ? '(unknown device)' : devicesList[index].name),
+            subtitle: Text(devicesList[index].id.toString()),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (context) => HeartRateMonitor(device: devicesList[index]),
+            )),
+          );
+        },
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              itemCount: devicesList.length,
-              itemBuilder: (context, index) {
-                return ListTile(
-                  title: Text(devicesList[index].name.isEmpty ? '(unknown device)' : devicesList[index].name),
-                  subtitle: Text(devicesList[index].id.toString()),
-                  onTap: () => connectToDevice(devicesList[index]),
-                );
-              },
-            ),
-          ),
-          pulseData.isEmpty ? Expanded(child: Center(child: CircularProgressIndicator())) : Expanded(
-            child: LineChart(
-              LineChartData(
-                gridData: FlGridData(show: true),
-                titlesData: FlTitlesData(show: true),
-                borderData: FlBorderData(show: true),
-                lineBarsData: [
-                  LineChartBarData(
-                    spots: pulseData,
-                    isCurved: true,
-                    barWidth: 2,
-                    color: Colors.blue,
-                    dotData: FlDotData(show: false),
-                    belowBarData: BarAreaData(show: false),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
+    );
+  }
+}
+
+class HeartRateMonitor extends StatefulWidget {
+  final BluetoothDevice device;
+
+  const HeartRateMonitor({Key? key, required this.device}) : super(key: key);
+
+  @override
+  _HeartRateMonitorState createState() => _HeartRateMonitorState();
+}
+
+class _HeartRateMonitorState extends State<HeartRateMonitor> {
+  StreamSubscription<List<int>>? dataSubscription;
+  int currentHeartRate = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    connectToDevice();
+  }
+
+  void connectToDevice() async {
+    await widget.device.connect();
+    discoverServices();
+  }
+
+  void discoverServices() async {
+    List<BluetoothService> services = await widget.device.discoverServices();
+    for (var service in services) {
+      var characteristic = service.characteristics.firstWhere(
+        (c) => c.uuid.toString().toUpperCase().contains('HEART_RATE_MEASUREMENT'), // Replace with your characteristic UUID
+        orElse: () => throw Exception('Characteristic not found.'),
+      );
+      await characteristic.setNotifyValue(true);
+      dataSubscription = characteristic.value.listen((data) {
+        setState(() {
+          currentHeartRate = int.parse(String.fromCharCodes(data));
+        });
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    dataSubscription?.cancel();
+    widget.device.disconnect();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Heart Rate Monitor')),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.favorite, color: Colors.red, size: 48),
+            const SizedBox(height: 24),
+            Text('Current Heart Rate: $currentHeartRate bpm', style: TextStyle(fontSize: 24)),
+          ],
+        ),
       ),
     );
   }

@@ -32,7 +32,8 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_blue: ^0.8.0
-  fl_chart: ^0.40.0
+  flutter_material_icons: any
+
 
 
 
